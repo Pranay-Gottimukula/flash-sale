@@ -9,8 +9,9 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    // For NeonDB: use the direct (non-pooled) connection string here
-    // so that prisma migrate dev can run DDL statements directly.
-    url: process.env["DATABASE_URL"] as string,
+    // DIRECT_URL bypasses the connection pooler so that prisma migrate dev
+    // can run DDL (CREATE TABLE etc.) without "prepared statement" errors on NeonDB.
+    // At runtime, lib/prisma.ts uses DATABASE_URL (pooler) via pg.Pool.
+    url: (process.env["DIRECT_URL"] || process.env["DATABASE_URL"]) as string,
   },
 });
