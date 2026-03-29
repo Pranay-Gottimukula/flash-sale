@@ -244,6 +244,14 @@ export default function SellerDashboard() {
                       {/* Actions */}
                       <td style={{ padding: "1rem 1.5rem" }}>
                         <div style={{ display: "flex", gap: "0.5rem" }}>
+                          <Link href={`/seller/products/${product.id}/edit`}>
+                            <button
+                              className="btn-ghost"
+                              style={{ padding: "0.35rem 0.75rem", fontSize: "0.75rem" }}
+                            >
+                              <Eye size={13} /> Edit
+                            </button>
+                          </Link>
                           {product.status !== "TERMINATED" && product.status !== "SOLD_OUT" && (
                             <button
                               className="btn-danger"
