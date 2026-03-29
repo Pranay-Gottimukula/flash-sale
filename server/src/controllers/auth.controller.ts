@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { authService, registerSchema, loginSchema } from "../services/auth.service";
+import { userRepository } from "../repositories/user.repository";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -39,7 +40,16 @@ export const authController = {
 
   me: async (req: Request, res: Response, next: NextFunction) => {
     try {
-      res.json({ user: req.user });
+      if (!req.user) {
+        res.status(401).json({ message: "Not authenticated" });
+        return;
+      }
+      const user = await userRepository.findById(req.user.userId);
+      if (!user) {
+        res.status(404).json({ message: "User not found" });
+        return;
+      }
+      res.json({ user });
     } catch (err) {
       next(err);
     }

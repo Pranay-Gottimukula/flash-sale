@@ -48,7 +48,15 @@ export default function NewProductPage() {
     setLoading(true);
     try {
       const fd = new FormData();
-      Object.entries(form).forEach(([k, v]) => { if (v) fd.append(k, v); });
+      Object.entries(form).forEach(([k, v]) => {
+        if (v) {
+          if (k === "sale_starts_at") {
+            fd.append(k, new Date(v).toISOString());
+          } else {
+            fd.append(k, v);
+          }
+        }
+      });
       if (image) fd.append("image", image);
 
       await api.upload("/api/products", fd);

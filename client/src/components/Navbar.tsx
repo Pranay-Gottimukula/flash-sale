@@ -136,7 +136,7 @@ export default function Navbar() {
                   color: "var(--accent)",
                 }}
               >
-                {user.full_name.charAt(0).toUpperCase()}
+                {user.full_name?.charAt(0).toUpperCase() || "U"}
               </div>
             </div>
           )}
