@@ -73,11 +73,34 @@ const redis = globalForRedis.redis ?? new Redis(REDIS_URL, {
 
 // ── Lifecycle events ──────────────────────────────────────────────────────────
 
-redis.on('connect',       () => console.log('✅ Redis connected'));
-redis.on('ready',         () => console.log('✅ Redis ready — registering Lua scripts…'));
-redis.on('error',  (err: Error) => console.error('❌ Redis error:', err.message));
-redis.on('reconnecting',  () => console.warn('⚠️  Redis reconnecting…'));
-redis.on('close',         () => console.warn('⚠️  Redis connection closed'));
+redis.on('connect',      () => console.log('✅ Redis connected'));
+redis.on('ready',        () => console.log('✅ Redis ready — Lua scripts registered'));
+redis.on('error', (err: Error) => console.error('❌ Redis error:', err.message));
+redis.on('reconnecting', () => console.warn('⚠️  Redis reconnecting…'));
+redis.on('close',        () => console.warn('⚠️  Redis connection closed'));
+
+// ── Startup helper ────────────────────────────────────────────────────────────
+//
+// Call this ONCE during server bootstrap (server.ts → bootstrap()).
+// Because lazyConnect: true is set, the TCP handshake to Redis has NOT happened
+// yet when this module is first imported.  Calling connectRedis() fires it
+// explicitly so we can:
+//   a) Fail fast if Redis is unreachable at startup (rather than on the first
+//      real request, which would result in a confusing 500 to an end-user).
+//   b) Guarantee the Lua script (leakyBucket) is registered before any
+//      queue/join request arrives.
+//
+// The outer try/catch in server.ts lets you decide the startup policy:
+//   - Strict:  process.exit(1) if Redis is down (safest for production).
+//   - Lenient: log a warning and continue (acceptable if Redis is non-critical
+//              for some routes, e.g., health checks still need to work).
+
+export async function connectRedis(): Promise<void> {
+  // redis.connect() resolves when the 'ready' event fires (i.e., after the
+  // TCP handshake AND the Redis server has finished loading its dataset).
+  // It rejects if the connection cannot be established within the timeout.
+  await redis.connect();
+}
 
 // ── Lua Script: Leaky Bucket Rate Limiter + Stock Decrement ───────────────────
 //

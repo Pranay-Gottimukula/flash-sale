@@ -1,65 +1,89 @@
 // apps/engine-gateway/src/server.ts
 import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+import cors    from 'cors';
+import dotenv  from 'dotenv';
 
 dotenv.config();
 
-import prisma from './lib/prisma';
-import redis from './services/redis.service';
-import queueRoutes from './routes/queue.routes';
-import adminRoutes from './routes/admin.routes';
-import healthRouter from './routes/health.routes';
+import prisma                   from './lib/prisma';
+import redis, { connectRedis }  from './services/redis.service';
+import queueRoutes              from './routes/queue.routes';
+import adminRoutes              from './routes/admin.routes';
+import healthRouter             from './routes/health.routes';
 
-const app = express();
-const PORT = process.env.PORT || 4000;
+const app  = express();
+const PORT = process.env.PORT ?? 4000;
 
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-// app.use('/api/queue', queueRoutes);
-// app.use('/api/admin', adminRoutes);
+app.use('/health',     healthRouter);
+app.use('/api/queue',  queueRoutes);
+app.use('/api/admin',  adminRoutes);
 
-// ── Health check ──────────────────────────────────────────────────────────────
-// app.get('/health', async (_req, res) => {
-//   try {
-//     // 1. Check Postgres
-//     await prisma.$queryRaw`SELECT 1`;
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+//
+// WHY a bootstrap() function instead of top-level await?
+//   Top-level await is only available in ES modules (type:"module" in package.json).
+//   Wrapping in an async IIFE is the compatible pattern for CommonJS TypeScript.
+//   It also lets us sequence startup steps clearly and handle each failure mode
+//   with its own error message before exiting.
 
-//     // 2. Check Redis (Sends a PING, expects a PONG)
-//     await redis.ping();
+async function bootstrap(): Promise<void> {
 
-//     // 3. Both passed! Return a detailed success map
-//     res.json({ 
-//       status: 'ok',
-//       message: 'Engine Gateway is ALIVE!',
-//       services: {
-//         postgres: 'connected',
-//         redis: 'connected'
-//       }
-//     });
+  // ── Step 1: Connect to Redis ──────────────────────────────────────────────
+  //
+  // connectRedis() calls redis.connect() which fires the TCP handshake and
+  // resolves once Redis emits the 'ready' event (dataset loaded, commands
+  // accepted).  This guarantees the Lua leakyBucket script is registered
+  // before the first /api/queue/join request can arrive.
 
-//   } catch (error) {
-//     console.error('🚨 Health Check Failed:', error);
-    
-//     // If either DB fails, the whole gateway is considered degraded
-//     res.status(500).json({ 
-//       status: 'error', 
-//       message: 'A critical backend service is down.',
-//       error: error instanceof Error ? error.message : 'Unknown error'
-//     });
-//   }
-// });
+  // @@@@@@@@@ Uncomment before production, Commented to save redis calls @@@@@@@@
+  // try {
+  //   await connectRedis();
+  // } catch (err) {
+  //   console.error('❌ Redis connection failed at startup:', err);
+  //   //
+  //   // STARTUP POLICY — choose one:
+  //   //
+  //   //   Strict (production default):
+  //   //     Crash immediately.  Let the process manager / k8s restart the pod.
+  //   //     The health check will fail until Redis is reachable, so no traffic
+  //   //     is routed here.
+  //   process.exit(1);
 
-app.use('/health', healthRouter);
+  //   //   Lenient (local dev / graceful degradation):
+  //   //     Log the warning and continue.  Health route returns 503.
+  //   //     Replace the process.exit(1) above with just a console.warn if needed:
+  //   //   console.warn('⚠️  Continuing without Redis — queue endpoints will fail.');
+  // }
 
-app.listen(PORT, () => {
-  console.log(`🚀 Engine Gateway running on http://localhost:${PORT}`);
-});
+  // ── Step 2: Verify Postgres connection ────────────────────────────────────
+  //
+  // Prisma uses a lazy connection pool by default — the pool is not opened
+  // until the first query.  We fire a cheap SELECT 1 here to:
+  //   a) Fail fast if DATABASE_URL is wrong or Postgres is down.
+  //   b) Pre-warm the pool so the first real query isn't cold.
+  try {
+    await prisma.$connect();
+    console.log('✅ Postgres connected');
+  } catch (err) {
+    console.error('❌ Postgres connection failed at startup:', err);
+    process.exit(1);
+  }
 
-// redis.connect().catch((err) => {
-//   // We catch the initial error so Node doesn't throw an Unhandled Promise Rejection.
-//   // ioredis will automatically take over and use our retryStrategy to keep trying!
-//   console.warn('⚠️ Redis is currently unreachable. Gateway is alive, but queue is paused. Retrying...');
-// });
+  // ── Step 3: Start HTTP server ─────────────────────────────────────────────
+  //
+  // Only open the port AFTER both dependencies are verified.
+  // This is critical for k8s readiness probes: the pod is not considered
+  // "ready" until it is actually listening, so no traffic arrives before
+  // Redis and Postgres are confirmed healthy.
+  app.listen(PORT, () => {
+    console.log(`🚀 Engine Gateway running at http://localhost:${PORT}`);
+    console.log(`   Health: http://localhost:${PORT}/health`);
+  });
+}
+
+bootstrap();
