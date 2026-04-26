@@ -5,12 +5,13 @@ import dotenv  from 'dotenv';
 
 dotenv.config();
 
-import prisma                   from './lib/prisma';
-import redis, { connectRedis }  from './services/redis.service';
-import queueRoutes              from './routes/queue.routes';
-import adminRoutes              from './routes/admin.routes';
-import healthRouter             from './routes/health.routes';
-import jwksRouter from './routes/jwks.routes';
+import prisma                        from './lib/prisma';
+import redis, { connectRedis }       from './services/redis.service';
+import queueRoutes                   from './routes/queue.routes';
+import adminRoutes                   from './routes/admin.routes';
+import healthRouter                  from './routes/health.routes';
+import jwksRouter                    from './routes/jwks.routes';
+import { initDrains, stopDrain, getActiveDrains } from './services/drain.service';
 
 const app  = express();
 const PORT = process.env.PORT ?? 4000;
@@ -82,10 +83,65 @@ async function bootstrap(): Promise<void> {
   // This is critical for k8s readiness probes: the pod is not considered
   // "ready" until it is actually listening, so no traffic arrives before
   // Redis and Postgres are confirmed healthy.
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🚀 Engine Gateway running at http://localhost:${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/health`);
   });
+
+  // ── Step 4: Resume any drain loops for events that were ACTIVE at boot ────
+  //
+  // Handles server restarts mid-sale — active events keep draining without
+  // operator intervention. Non-fatal: events can be re-activated via the
+  // admin API if this fails.
+  try {
+    await initDrains();
+  } catch (err) {
+    console.error('[bootstrap] initDrains failed — events can be re-activated manually:', err);
+  }
+
+  // ── Step 5: Graceful shutdown ─────────────────────────────────────────────
+  //
+  // On SIGTERM (k8s pod eviction, deploy) or SIGINT (Ctrl-C in dev):
+  //   1. Stop all drain intervals so no new Redis commands are fired.
+  //   2. Stop accepting new HTTP connections.
+  //   3. Wait up to 5 s for in-flight requests to complete.
+  //   4. Disconnect Redis and Postgres.
+  //
+  // The force-exit timer is unref'd so it doesn't prevent the process from
+  // exiting earlier if everything clears up in time.
+
+  let shuttingDown = false;
+
+  async function shutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    console.log(`\n[server] ${signal} received — starting graceful shutdown`);
+
+    for (const pk of getActiveDrains()) {
+      stopDrain(pk);
+    }
+
+    const forceTimer = setTimeout(() => {
+      console.error('[server] Graceful shutdown timed out after 5s — force exiting');
+      process.exit(1);
+    }, 5_000);
+    forceTimer.unref();
+
+    await new Promise<void>(resolve => server.close(() => resolve()));
+
+    await Promise.allSettled([
+      redis.quit(),
+      prisma.$disconnect(),
+    ]);
+
+    clearTimeout(forceTimer);
+    console.log('[server] Graceful shutdown complete');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM').catch(() => process.exit(1)));
+  process.on('SIGINT',  () => shutdown('SIGINT').catch(() => process.exit(1)));
 }
 
 bootstrap();

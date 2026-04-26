@@ -192,6 +192,33 @@ redis.defineCommand('queueAdmission', {
 //     eventKey, queueKey, resultKey, Date.now(), userId,
 //   );
 
+// ── Lua Script: Drain Process ────────────────────────────────────────────────
+//
+// Used by drain.service.ts to atomically claim one stock unit for a queued user.
+// KEYS[1] = flash:event:{publicKey}, KEYS[2] = flash:result:{publicKey}
+// ARGV[1] = userId
+// Returns 1 (WON) or -1 (SOLD_OUT).
+
+const DRAIN_PROCESS_LUA = readFileSync(
+  join(__dirname, '../scripts/drain-process.lua'),
+  'utf-8'
+);
+
+declare module 'ioredis' {
+  interface Redis {
+    drainProcess(
+      eventKey:  string,
+      resultKey: string,
+      userId:    string,
+    ): Promise<number>;
+  }
+}
+
+redis.defineCommand('drainProcess', {
+  numberOfKeys: 2,
+  lua: DRAIN_PROCESS_LUA,
+});
+
 // ── Key helpers ───────────────────────────────────────────────────────────────
 
 export function getRedisKeys(publicKey: string) {
