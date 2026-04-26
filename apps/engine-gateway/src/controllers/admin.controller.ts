@@ -28,6 +28,7 @@ import crypto                 from 'crypto';
 import prisma from '../lib/prisma';
 import redis                  from '../services/redis.service';
 import { warmEventCache, evictEventCache } from '../services/event-cache.service';
+import { startDrain, stopDrain }           from '../services/drain.service';
 
 
 const generateKeyPairAsync = promisify(generateKeyPair);
@@ -319,6 +320,8 @@ export async function activateEvent(req: Request<{ id: string }>, res: Response)
     name:           event.name,
   });
 
+  startDrain(event.publicKey, event.rateLimit);
+
   res.status(200).json({
     message: 'Event is now ACTIVE. Queue is open.',
     id:      event.id,
@@ -358,6 +361,8 @@ export async function endEvent(req: Request<{ id: string }>, res: Response): Pro
   pipeline.del(`flash:queue:${event.publicKey}`);
   pipeline.del(`flash:result:${event.publicKey}`);
   await pipeline.exec();
+
+  stopDrain(event.publicKey);
 
   // ── 3. Evict Node cache ───────────────────────────────────────────────────
   //
