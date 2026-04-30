@@ -26,12 +26,26 @@ import { generateKeyPair }    from 'crypto';
 import { promisify }          from 'util';
 import crypto                 from 'crypto';
 import prisma from '../lib/prisma';
-import redis                  from '../services/redis.service';
+import redis, { getRedisKeys } from '../services/redis.service';
 import { warmEventCache, evictEventCache } from '../services/event-cache.service';
 import { startDrain, stopDrain }           from '../services/drain.service';
 
-
 const generateKeyPairAsync = promisify(generateKeyPair);
+
+const API_URL = process.env.API_URL ?? 'https://api.flashsale.dev';
+
+function parseRedisInt(val: string | null): number | null {
+  return val !== null ? parseInt(val, 10) : null;
+}
+
+function groupByToMap<T extends { _count: { _all: number } }>(
+  rows: T[],
+  getKey: (row: T) => string,
+): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const row of rows) map[getKey(row)] = row._count._all;
+  return map;
+}
 
 
 // TODO: Replace with a shared singleton from src/lib/prisma.ts
@@ -227,7 +241,7 @@ async function seedRedis(params: {
   queueCap:   number;
 }): Promise<void> {
   const { publicKey, eventId, stockCount, rateLimit, queueCap } = params;
-  const key = `flash:event:${publicKey}`;
+  const { eventKey: key } = getRedisKeys(publicKey);
 
   // Check if already seeded — prevents overwrite on duplicate calls
   const exists = await redis.hexists(key, 'stock');
@@ -276,14 +290,14 @@ export async function listEvents(req: Request, res: Response): Promise<void> {
 
   const activeEvents = events.filter(e => e.status === 'ACTIVE');
 
-  const liveStocks = await Promise.all(
-    activeEvents.map(e => redis.hget(`flash:event:${e.publicKey}`, 'stock'))
-  );
+  const pipeline = redis.pipeline();
+  activeEvents.forEach(e => pipeline.hget(getRedisKeys(e.publicKey).eventKey, 'stock'));
+  const pipelineResults = (await pipeline.exec()) ?? [];
 
   const liveStockMap = new Map<string, number>(
     activeEvents.map((e, i) => {
-      const raw = liveStocks[i];
-      return [e.publicKey, raw !== null ? parseInt(raw, 10) : e.stockCount];
+      const raw = (pipelineResults[i]?.[1] as string | null) ?? null;
+      return [e.publicKey, parseRedisInt(raw) ?? e.stockCount];
     })
   );
 
@@ -313,13 +327,18 @@ export async function listEvents(req: Request, res: Response): Promise<void> {
 export async function getEvent(req: Request<{ id: string }>, res: Response): Promise<void> {
   const { id } = req.params;
 
-  const event = await prisma.saleEvent.findUnique({ where: { id } });
+  const event = await prisma.saleEvent.findUnique({
+    where:  { id },
+    select: {
+      id: true, name: true, status: true, stockCount: true, rateLimit: true,
+      oversubscriptionMultiplier: true, publicKey: true, rsaPublicKey: true,
+      signingSecret: true, createdAt: true,
+    },
+  });
   if (!event) {
     res.status(404).json({ error: 'Event not found' });
     return;
   }
-
-  const apiUrl = process.env.API_URL || 'https://api.flashsale.dev';
 
   const integrationSnippet = `
 // Install: npm install @flash-sale/sdk
@@ -329,7 +348,7 @@ import { FlashSale } from '@flash-sale/sdk';
 
 const sale = new FlashSale({
   publicKey: '${event.publicKey}',
-  apiUrl: '${apiUrl}'
+  apiUrl: '${API_URL}'
 });
 
 sale.join(userId, {
@@ -339,7 +358,7 @@ sale.join(userId, {
 });
 
 // Server-side (your payment backend) — verify the token
-const response = await fetch('${apiUrl}/api/queue/verify', {
+const response = await fetch('${API_URL}/api/queue/verify', {
   method: 'POST',
   headers: {
     'Content-Type': 'application/json',
@@ -407,12 +426,13 @@ export async function activateEvent(req: Request<{ id: string }>, res: Response)
   }
 
   // Change status in redis
+  const { eventKey: activateKey } = getRedisKeys(event.publicKey);
   try {
-    await redis.hset(`flash:event:${event.publicKey}`, 'status', 'ACTIVE');
+    await redis.hset(activateKey, 'status', 'ACTIVE');
   } catch (err) {
     console.error(
       `[activateEvent] CRITICAL: Postgres updated but Redis failed for ${id}. ` +
-      `Manual fix: redis-cli HSET flash:event:${event.publicKey} status ACTIVE`
+      `Manual fix: redis-cli HSET ${activateKey} status ACTIVE`
     , err);
     res.status(500).json({ error: 'Activated in DB but Redis sync failed. Contact support.' });
     return;
@@ -455,8 +475,7 @@ export async function getEventStats(req: Request<{ id: string }>, res: Response)
     return;
   }
 
-  const eventKey = `flash:event:${event.publicKey}`;
-  const queueKey = `flash:queue:${event.publicKey}`;
+  const { eventKey, queueKey } = getRedisKeys(event.publicKey);
 
   const [
     redisFields,
@@ -482,11 +501,8 @@ export async function getEventStats(req: Request<{ id: string }>, res: Response)
 
   const [stockStr, admittedStr, queueCapStr] = redisFields;
 
-  const attemptMap: Record<string, number> = {};
-  for (const row of attemptCounts) attemptMap[row.result] = row._count._all;
-
-  const releaseMap: Record<string, number> = {};
-  for (const row of releaseCounts) releaseMap[row.reason] = row._count._all;
+  const attemptMap = groupByToMap(attemptCounts, r => r.result);
+  const releaseMap = groupByToMap(releaseCounts, r => r.reason);
 
   const won         = attemptMap['WON']          ?? 0;
   const queued      = attemptMap['QUEUED']        ?? 0;
@@ -509,10 +525,10 @@ export async function getEventStats(req: Request<{ id: string }>, res: Response)
       createdAt:                  event.createdAt,
     },
     live: {
-      stockRemaining: stockStr    !== null ? parseInt(stockStr,    10) : null,
+      stockRemaining: parseRedisInt(stockStr),
       queueDepth,
-      admitted:       admittedStr !== null ? parseInt(admittedStr, 10) : null,
-      queueCap:       queueCapStr !== null ? parseInt(queueCapStr, 10) : null,
+      admitted:       parseRedisInt(admittedStr),
+      queueCap:       parseRedisInt(queueCapStr),
     },
     funnel: { totalRequests, queued, instantWins, soldOut, rateLimited, won, released, verified },
     rates: {
@@ -548,11 +564,12 @@ export async function endEvent(req: Request<{ id: string }>, res: Response): Pro
   // returning EVENT_NOT_ACTIVE for any in-flight requests.
   // TTL cleans up the hash from Redis memory after 48 hours.
 
+  const { eventKey: endKey, queueKey: endQueueKey, resultKey: endResultKey } = getRedisKeys(event.publicKey);
   const pipeline = redis.pipeline();
-  pipeline.hset(`flash:event:${event.publicKey}`, 'status', 'ENDED');
-  pipeline.expire(`flash:event:${event.publicKey}`, 48 * 60 * 60);
-  pipeline.del(`flash:queue:${event.publicKey}`);
-  pipeline.del(`flash:result:${event.publicKey}`);
+  pipeline.hset(endKey, 'status', 'ENDED');
+  pipeline.expire(endKey, 48 * 60 * 60);
+  pipeline.del(endQueueKey);
+  pipeline.del(endResultKey);
   await pipeline.exec();
 
   stopDrain(event.publicKey);
