@@ -9,6 +9,7 @@ import prisma                        from './lib/prisma';
 import redis, { connectRedis }       from './services/redis.service';
 import queueRoutes                   from './routes/queue.routes';
 import adminRoutes                   from './routes/admin.routes';
+import authRoutes                    from './routes/auth.routes';
 import healthRouter                  from './routes/health.routes';
 import jwksRouter                    from './routes/jwks.routes';
 import { initDrains, stopDrain, getActiveDrains } from './services/drain.service';
@@ -21,9 +22,10 @@ app.use(cors());
 app.use(express.json());
 
 // ── Routes ────────────────────────────────────────────────────────────────────
-app.use('/health',     healthRouter);
-app.use('/api/queue',  queueRoutes);
-app.use('/api/admin',  adminRoutes);
+app.use('/health',          healthRouter);
+app.use('/api/auth',        authRoutes);
+app.use('/api/queue',       queueRoutes);
+app.use('/api/admin',       adminRoutes);
 app.use('/api/.well-known/jwks', jwksRouter);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────

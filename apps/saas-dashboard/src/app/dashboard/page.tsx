@@ -1,0 +1,121 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { Calendar, Plus } from 'lucide-react';
+import { api }            from '@/lib/api';
+import { relativeTime, toErrorMessage } from '@/lib/utils';
+import { PageHeader }     from '@/components/layout/page-header';
+import { Card }           from '@/components/ui/card';
+import { Badge, type BadgeVariant } from '@/components/ui/badge';
+import { Button }         from '@/components/ui/button';
+import { Spinner }        from '@/components/ui/spinner';
+import { EmptyState }     from '@/components/ui/empty-state';
+import { ErrorBanner }    from '@/components/ui/error-banner';
+
+interface SaleEvent {
+  id:         string;
+  name:       string;
+  status:     'PENDING' | 'ACTIVE' | 'ENDED';
+  stockCount: number;
+  rateLimit:  number;
+  createdAt:  string;
+}
+
+const statusVariant: Record<SaleEvent['status'], BadgeVariant> = {
+  PENDING: 'neutral',
+  ACTIVE:  'success',
+  ENDED:   'error',
+};
+
+const statusLabel: Record<SaleEvent['status'], string> = {
+  PENDING: 'Pending',
+  ACTIVE:  'Active',
+  ENDED:   'Ended',
+};
+
+export default function DashboardPage() {
+  const [events,  setEvents]  = useState<SaleEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
+    api.get<SaleEvent[]>('/api/admin/events')
+      .then(setEvents)
+      .catch(err => setError(toErrorMessage(err)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const createAction = (
+    <Link href="/dashboard/events/new">
+      <Button size="sm">
+        <Plus size={16} />
+        Create Event
+      </Button>
+    </Link>
+  );
+
+  return (
+    <>
+      <PageHeader title="Events" action={createAction} />
+
+      {loading ? (
+        <div className="flex justify-center py-20">
+          <Spinner size="md" className="text-text-tertiary" />
+        </div>
+      ) : error ? (
+        <ErrorBanner message={error} onRetry={load} className="mb-6" />
+      ) : events.length === 0 ? (
+        <div className="animate-page-in">
+          <EmptyState
+            icon={<Calendar size={32} />}
+            title="No events yet"
+            description="Create your first flash sale event to get started"
+            action={
+              <Link href="/dashboard/events/new">
+                <Button size="sm">
+                  <Plus size={16} />
+                  Create Event
+                </Button>
+              </Link>
+            }
+          />
+        </div>
+      ) : (
+        <div className="animate-page-in grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {events.map(event => (
+            <Link
+              key={event.id}
+              href={`/dashboard/events/${event.id}`}
+              className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base"
+            >
+              <Card
+                interactive
+                className="transition-[border-color] duration-150 group-hover:border-[rgba(255,255,255,0.2)]"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-medium text-text-primary leading-snug">{event.name}</p>
+                    <Badge variant={statusVariant[event.status]}>
+                      {statusLabel[event.status]}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-text-secondary">
+                    {event.stockCount.toLocaleString()} items · Rate: {event.rateLimit}/s
+                  </p>
+                  <p className="text-xs text-text-tertiary">
+                    {relativeTime(event.createdAt)}
+                  </p>
+                </div>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}

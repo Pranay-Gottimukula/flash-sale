@@ -14,13 +14,12 @@ datasource db {
 }
 
 model Client {
-  id        String      @id @default(cuid())
-  email     String      @unique
-  publicKey String      @unique
-  // secretKey removed from Client — Client no longer has HS256 secret
-  // Authentication to dashboard handled separately (sessions/OAuth)
-  createdAt DateTime    @default(now())
-  events    SaleEvent[]
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  publicKey    String      @unique
+  createdAt    DateTime    @default(now())
+  events       SaleEvent[]
 }
 
 model SaleEvent {
