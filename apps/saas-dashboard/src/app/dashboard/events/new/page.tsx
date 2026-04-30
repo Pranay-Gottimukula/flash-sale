@@ -2,20 +2,24 @@
 
 import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { api }          from '@/lib/api';
-import { useAuth }      from '@/lib/auth-context';
-import { PageHeader }   from '@/components/layout/page-header';
-import { Card }         from '@/components/ui/card';
-import { Input }        from '@/components/ui/input';
-import { Button }       from '@/components/ui/button';
+import { api }         from '@/lib/api';
+import { toErrorMessage } from '@/lib/utils';
+import { useAuth }     from '@/lib/auth-context';
+import { useToast }    from '@/components/ui/toast';
+import { PageHeader }  from '@/components/layout/page-header';
+import { Card }        from '@/components/ui/card';
+import { Input }       from '@/components/ui/input';
+import { Button }      from '@/components/ui/button';
+import { ErrorBanner } from '@/components/ui/error-banner';
 
 interface CreateEventResponse {
   id: string;
 }
 
 export default function CreateEventPage() {
-  const router        = useRouter();
-  const { user }      = useAuth();
+  const router   = useRouter();
+  const { user } = useAuth();
+  const { toast } = useToast();
 
   const [name,       setName]       = useState('');
   const [stockCount, setStockCount] = useState('');
@@ -39,26 +43,23 @@ export default function CreateEventPage() {
         rateLimit:                  Number(rateLimit),
         oversubscriptionMultiplier: Number(multiplier),
       });
+      toast('Event created successfully');
       router.push(`/dashboard/events/${event.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create event. Please try again.');
+      setError(toErrorMessage(err));
       setLoading(false);
     }
   }
 
   return (
-    <>
+    <div className="animate-page-in">
       <PageHeader title="Create Event" />
 
-      <div className="max-w-lg">
+      <div className="w-full max-w-lg">
         <Card>
           <form onSubmit={handleSubmit} className="space-y-6" noValidate>
 
-            {error && (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-                {error}
-              </div>
-            )}
+            {error && <ErrorBanner message={error} />}
 
             <Input
               label="Event Name"
@@ -130,6 +131,6 @@ export default function CreateEventPage() {
           </form>
         </Card>
       </div>
-    </>
+    </div>
   );
 }

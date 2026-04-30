@@ -9,6 +9,7 @@ const config: Config = {
           DEFAULT: '#111111',
           raised:  '#1a1a1a',
           overlay: '#222222',
+          base:    '#0a0a0a',
         },
         border: {
           subtle:  'rgba(255,255,255,0.06)',

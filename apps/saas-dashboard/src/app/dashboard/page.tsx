@@ -1,17 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { Calendar, Plus } from 'lucide-react';
-import { api } from '@/lib/api';
-import { relativeTime } from '@/lib/utils';
-import { PageHeader }  from '@/components/layout/page-header';
-import { Card }        from '@/components/ui/card';
+import { api }            from '@/lib/api';
+import { relativeTime, toErrorMessage } from '@/lib/utils';
+import { PageHeader }     from '@/components/layout/page-header';
+import { Card }           from '@/components/ui/card';
 import { Badge, type BadgeVariant } from '@/components/ui/badge';
-import { Button }      from '@/components/ui/button';
-import { Spinner }     from '@/components/ui/spinner';
-import { EmptyState }  from '@/components/ui/empty-state';
+import { Button }         from '@/components/ui/button';
+import { Spinner }        from '@/components/ui/spinner';
+import { EmptyState }     from '@/components/ui/empty-state';
+import { ErrorBanner }    from '@/components/ui/error-banner';
 
 interface SaleEvent {
   id:         string;
@@ -35,15 +35,20 @@ const statusLabel: Record<SaleEvent['status'], string> = {
 };
 
 export default function DashboardPage() {
-  const router = useRouter();
   const [events,  setEvents]  = useState<SaleEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
     api.get<SaleEvent[]>('/api/admin/events')
       .then(setEvents)
+      .catch(err => setError(toErrorMessage(err)))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   const createAction = (
     <Link href="/dashboard/events/new">
@@ -62,27 +67,31 @@ export default function DashboardPage() {
         <div className="flex justify-center py-20">
           <Spinner size="md" className="text-text-tertiary" />
         </div>
+      ) : error ? (
+        <ErrorBanner message={error} onRetry={load} className="mb-6" />
       ) : events.length === 0 ? (
-        <EmptyState
-          icon={<Calendar size={32} />}
-          title="No events yet"
-          description="Create your first flash sale event to get started"
-          action={
-            <Link href="/dashboard/events/new">
-              <Button size="sm">
-                <Plus size={16} />
-                Create Event
-              </Button>
-            </Link>
-          }
-        />
+        <div className="animate-page-in">
+          <EmptyState
+            icon={<Calendar size={32} />}
+            title="No events yet"
+            description="Create your first flash sale event to get started"
+            action={
+              <Link href="/dashboard/events/new">
+                <Button size="sm">
+                  <Plus size={16} />
+                  Create Event
+                </Button>
+              </Link>
+            }
+          />
+        </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className="animate-page-in grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {events.map(event => (
-            <div
+            <Link
               key={event.id}
-              onClick={() => router.push(`/dashboard/events/${event.id}`)}
-              className="group"
+              href={`/dashboard/events/${event.id}`}
+              className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface-base"
             >
               <Card
                 interactive
@@ -95,17 +104,15 @@ export default function DashboardPage() {
                       {statusLabel[event.status]}
                     </Badge>
                   </div>
-
                   <p className="text-xs text-text-secondary">
                     {event.stockCount.toLocaleString()} items · Rate: {event.rateLimit}/s
                   </p>
-
                   <p className="text-xs text-text-tertiary">
                     {relativeTime(event.createdAt)}
                   </p>
                 </div>
               </Card>
-            </div>
+            </Link>
           ))}
         </div>
       )}

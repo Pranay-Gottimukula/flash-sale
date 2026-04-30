@@ -55,7 +55,7 @@ export function CopyableField({
             <button
               type="button"
               onClick={() => setRevealed(r => !r)}
-              className="rounded p-1.5 text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary"
+              className="rounded p-1.5 text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               aria-label={revealed ? 'Hide value' : 'Reveal value'}
             >
               {revealed ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -64,7 +64,7 @@ export function CopyableField({
           <button
             type="button"
             onClick={copy}
-            className="rounded p-1.5 text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary"
+            className="rounded p-1.5 text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             aria-label={copied ? 'Copied!' : 'Copy to clipboard'}
           >
             {copied
@@ -92,7 +92,7 @@ export function CopyableField({
           <button
             type="button"
             onClick={() => setExpanded(e => !e)}
-            className="flex w-full items-center justify-center gap-1.5 border-t border-border-subtle py-1.5 text-xs text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary"
+            className="flex w-full items-center justify-center gap-1.5 border-t border-border-subtle py-1.5 text-xs text-text-tertiary transition-colors hover:bg-surface-overlay hover:text-text-secondary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent focus-visible:ring-inset"
           >
             {expanded
               ? <><ChevronUp size={12} /> Collapse</>

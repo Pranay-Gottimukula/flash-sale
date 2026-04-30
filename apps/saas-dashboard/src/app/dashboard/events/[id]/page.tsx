@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { AlertTriangle, Zap } from 'lucide-react';
+import { Zap } from 'lucide-react';
 import { api }           from '@/lib/api';
-import { relativeTime }  from '@/lib/utils';
+import { relativeTime, toErrorMessage } from '@/lib/utils';
+import { useToast }      from '@/components/ui/toast';
 import { Badge, type BadgeVariant } from '@/components/ui/badge';
 import { Button }        from '@/components/ui/button';
 import { Card }          from '@/components/ui/card';
 import { Modal }         from '@/components/ui/modal';
 import { Spinner }       from '@/components/ui/spinner';
+import { ErrorBanner }   from '@/components/ui/error-banner';
 import { CopyableField } from '@/components/ui/copyable-field';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -64,10 +66,7 @@ const STATUS_VARIANT: Record<EventStatus, BadgeVariant> = {
 // ── StatCard ──────────────────────────────────────────────────────────────────
 
 function StatCard({
-  label,
-  value,
-  total,
-  isLive,
+  label, value, total, isLive,
 }: {
   label:   string;
   value:   number | null;
@@ -79,7 +78,7 @@ function StatCard({
 
   return (
     <Card padding={false}>
-      <div className="p-4 flex flex-col gap-2.5">
+      <div className="flex flex-col gap-2.5 p-4">
         <p
           className="text-2xl font-bold tabular-nums text-text-primary"
           style={isLive ? { animation: 'stat-pulse 3s ease-in-out infinite' } : undefined}
@@ -103,10 +102,7 @@ function StatCard({
 // ── FunnelBar ─────────────────────────────────────────────────────────────────
 
 function FunnelBar({
-  label,
-  count,
-  total,
-  colorClass,
+  label, count, total, colorClass,
 }: {
   label:      string;
   count:      number;
@@ -136,14 +132,16 @@ function FunnelBar({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function EventDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id }    = useParams<{ id: string }>();
+  const { toast } = useToast();
 
   const [event,         setEvent]         = useState<EventDetail | null>(null);
   const [stats,         setStats]         = useState<StatsResponse | null>(null);
   const [loading,       setLoading]       = useState(true);
+  const [loadError,     setLoadError]     = useState('');
   const [actionLoading, setActionLoading] = useState(false);
-  const [showEndModal,  setShowEndModal]  = useState(false);
   const [actionError,   setActionError]   = useState('');
+  const [showEndModal,  setShowEndModal]  = useState(false);
 
   const fetchEvent = useCallback(
     () => api.get<EventDetail>(`/api/admin/events/${id}`),
@@ -154,12 +152,16 @@ export default function EventDetailPage() {
     [id],
   );
 
-  // Initial load
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setLoadError('');
     Promise.all([fetchEvent(), fetchStats()])
       .then(([ev, st]) => { setEvent(ev); setStats(st); })
+      .catch(err => setLoadError(toErrorMessage(err)))
       .finally(() => setLoading(false));
   }, [fetchEvent, fetchStats]);
+
+  useEffect(() => { load(); }, [load]);
 
   // Auto-refresh stats every 5 s when ACTIVE
   useEffect(() => {
@@ -178,8 +180,9 @@ export default function EventDetailPage() {
       const [ev, st] = await Promise.all([fetchEvent(), fetchStats()]);
       setEvent(ev);
       setStats(st);
+      toast('Event activated — queue is now open');
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to activate event.');
+      setActionError(toErrorMessage(err));
     } finally {
       setActionLoading(false);
     }
@@ -194,8 +197,9 @@ export default function EventDetailPage() {
       const [ev, st] = await Promise.all([fetchEvent(), fetchStats()]);
       setEvent(ev);
       setStats(st);
+      toast('Event ended — queue is closed');
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to end event.');
+      setActionError(toErrorMessage(err));
     } finally {
       setActionLoading(false);
     }
@@ -205,6 +209,14 @@ export default function EventDetailPage() {
     return (
       <div className="flex h-64 items-center justify-center">
         <Spinner />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="py-8">
+        <ErrorBanner message={loadError} onRetry={load} />
       </div>
     );
   }
@@ -221,7 +233,7 @@ export default function EventDetailPage() {
   const isActive         = event.status === 'ACTIVE';
 
   return (
-    <>
+    <div className="animate-page-in">
       {/* ── Page header ─────────────────────────────────────────────────────── */}
       <div className="mb-6 flex items-start justify-between border-b border-border-subtle pb-6">
         <div className="flex items-center gap-3">
@@ -256,10 +268,7 @@ export default function EventDetailPage() {
       </div>
 
       {actionError && (
-        <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-          <AlertTriangle size={15} className="shrink-0" />
-          {actionError}
-        </div>
+        <ErrorBanner message={actionError} className="mb-6" />
       )}
 
       {/* ── Stats row ───────────────────────────────────────────────────────── */}
@@ -270,38 +279,17 @@ export default function EventDetailPage() {
           total={event.stockCount}
           isLive={isActive}
         />
-        <StatCard
-          label="Queue Depth"
-          value={live?.queueDepth ?? null}
-          isLive={isActive}
-        />
-        <StatCard
-          label="Total Winners"
-          value={funnel?.won ?? null}
-          isLive={isActive}
-        />
-        <StatCard
-          label="Verified"
-          value={funnel?.verified ?? null}
-          isLive={isActive}
-        />
+        <StatCard label="Queue Depth"   value={live?.queueDepth  ?? null} isLive={isActive} />
+        <StatCard label="Total Winners" value={funnel?.won        ?? null} isLive={isActive} />
+        <StatCard label="Verified"      value={funnel?.verified  ?? null} isLive={isActive} />
       </div>
 
       <div className="space-y-5">
         {/* ── Integration Keys ────────────────────────────────────────────── */}
-        <Card header={
-          <p className="text-sm font-semibold text-text-primary">Integration Keys</p>
-        }>
+        <Card header={<p className="text-sm font-semibold text-text-primary">Integration Keys</p>}>
           <div className="space-y-5">
-            <CopyableField
-              label="Public Key"
-              value={event.publicKey}
-            />
-            <CopyableField
-              label="RSA Public Key"
-              value={event.rsaPublicKey}
-              multiline
-            />
+            <CopyableField label="Public Key"       value={event.publicKey} />
+            <CopyableField label="RSA Public Key"   value={event.rsaPublicKey} multiline />
             <CopyableField
               label="Signing Secret"
               value={event.signingSecret}
@@ -318,45 +306,16 @@ export default function EventDetailPage() {
 
         {/* ── Event Funnel ─────────────────────────────────────────────────── */}
         {funnel && (
-          <Card header={
-            <p className="text-sm font-semibold text-text-primary">Event Funnel</p>
-          }>
+          <Card header={<p className="text-sm font-semibold text-text-primary">Event Funnel</p>}>
             <div className="space-y-6">
-              {/* Bar chart */}
               <div className="space-y-3">
-                <FunnelBar
-                  label="Queued"
-                  count={funnel.queued}
-                  total={funnel.totalRequests}
-                  colorClass="bg-blue-500"
-                />
-                <FunnelBar
-                  label="Won"
-                  count={funnel.won}
-                  total={funnel.totalRequests}
-                  colorClass="bg-green-600"
-                />
-                <FunnelBar
-                  label="Verified"
-                  count={funnel.verified}
-                  total={funnel.totalRequests}
-                  colorClass="bg-accent"
-                />
-                <FunnelBar
-                  label="Sold Out"
-                  count={funnel.soldOut}
-                  total={funnel.totalRequests}
-                  colorClass="bg-red-500"
-                />
-                <FunnelBar
-                  label="Released"
-                  count={funnel.released}
-                  total={funnel.totalRequests}
-                  colorClass="bg-yellow-500"
-                />
+                <FunnelBar label="Queued"   count={funnel.queued}   total={funnel.totalRequests} colorClass="bg-blue-500"   />
+                <FunnelBar label="Won"      count={funnel.won}      total={funnel.totalRequests} colorClass="bg-green-600"  />
+                <FunnelBar label="Verified" count={funnel.verified} total={funnel.totalRequests} colorClass="bg-accent"     />
+                <FunnelBar label="Sold Out" count={funnel.soldOut}  total={funnel.totalRequests} colorClass="bg-red-500"    />
+                <FunnelBar label="Released" count={funnel.released} total={funnel.totalRequests} colorClass="bg-yellow-500" />
               </div>
 
-              {/* Activity table */}
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border-subtle">
@@ -396,7 +355,7 @@ export default function EventDetailPage() {
         )}
       </div>
 
-      {/* ── End Event confirmation modal ────────────────────────────────────── */}
+      {/* ── End Event modal ─────────────────────────────────────────────────── */}
       <Modal
         isOpen={showEndModal}
         onClose={() => { if (!actionLoading) setShowEndModal(false); }}
@@ -404,24 +363,25 @@ export default function EventDetailPage() {
       >
         <div className="space-y-4">
           <p className="text-sm text-text-secondary">
-            This will immediately close the queue and mark the event as ended.
-            All users still in queue will be dropped.{' '}
-            <span className="text-text-primary font-medium">This cannot be undone.</span>
+            Are you sure you want to end{' '}
+            <span className="font-medium text-text-primary">{event.name}</span>?
+            {' '}This cannot be undone.
           </p>
           <div className="flex gap-3">
-            <Button variant="danger" onClick={handleEnd} className="flex-1">
-              End Event
-            </Button>
             <Button
-              variant="ghost"
+              variant="secondary"
               onClick={() => setShowEndModal(false)}
               disabled={actionLoading}
+              className="flex-1"
             >
               Cancel
+            </Button>
+            <Button variant="danger" onClick={handleEnd} loading={actionLoading} className="flex-1">
+              End Event
             </Button>
           </div>
         </div>
       </Modal>
-    </>
+    </div>
   );
 }

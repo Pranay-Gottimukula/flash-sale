@@ -1,3 +1,13 @@
+export function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    if (err.message === 'Failed to fetch') {
+      return 'Unable to connect to FlashEngine API. Check your connection.';
+    }
+    return err.message;
+  }
+  return 'An unexpected error occurred.';
+}
+
 export function relativeTime(date: string | Date): string {
   const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
 
