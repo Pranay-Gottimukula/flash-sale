@@ -252,6 +252,118 @@ async function seedRedis(params: {
   await pipeline.exec();
 }
 
+// ── GET /api/admin/events ─────────────────────────────────────────────────────
+//
+// Returns all events ordered newest-first. Active events get live stock from
+// Redis; all others use the Postgres stockCount.
+
+export async function listEvents(req: Request, res: Response): Promise<void> {
+  const events = await prisma.saleEvent.findMany({
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id:                         true,
+      name:                       true,
+      status:                     true,
+      stockCount:                 true,
+      rateLimit:                  true,
+      oversubscriptionMultiplier: true,
+      publicKey:                  true,
+      rsaPublicKey:               true,
+      createdAt:                  true,
+      _count: { select: { attempts: true, releases: true, usedJtis: true } },
+    },
+  });
+
+  const activeEvents = events.filter(e => e.status === 'ACTIVE');
+
+  const liveStocks = await Promise.all(
+    activeEvents.map(e => redis.hget(`flash:event:${e.publicKey}`, 'stock'))
+  );
+
+  const liveStockMap = new Map<string, number>(
+    activeEvents.map((e, i) => {
+      const raw = liveStocks[i];
+      return [e.publicKey, raw !== null ? parseInt(raw, 10) : e.stockCount];
+    })
+  );
+
+  res.status(200).json(
+    events.map(e => ({
+      id:                         e.id,
+      name:                       e.name,
+      status:                     e.status,
+      stockCount:                 e.status === 'ACTIVE'
+                                    ? (liveStockMap.get(e.publicKey) ?? e.stockCount)
+                                    : e.stockCount,
+      rateLimit:                  e.rateLimit,
+      oversubscriptionMultiplier: e.oversubscriptionMultiplier,
+      publicKey:                  e.publicKey,
+      rsaPublicKey:               e.rsaPublicKey,
+      createdAt:                  e.createdAt,
+      _count:                     e._count,
+    }))
+  );
+}
+
+// ── GET /api/admin/events/:id ─────────────────────────────────────────────────
+//
+// Full event detail including sensitive keys. Used by the dashboard's
+// "display keys once" page. rsaPrivateKey is never returned.
+
+export async function getEvent(req: Request<{ id: string }>, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const event = await prisma.saleEvent.findUnique({ where: { id } });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  const apiUrl = process.env.API_URL || 'https://api.flashsale.dev';
+
+  const integrationSnippet = `
+// Install: npm install @flash-sale/sdk
+
+// Browser-side (your storefront)
+import { FlashSale } from '@flash-sale/sdk';
+
+const sale = new FlashSale({
+  publicKey: '${event.publicKey}',
+  apiUrl: '${apiUrl}'
+});
+
+sale.join(userId, {
+  onQueued: (position) => showQueuePosition(position),
+  onWon: (token) => redirectToCheckout(token),
+  onSoldOut: () => showSoldOutMessage()
+});
+
+// Server-side (your payment backend) — verify the token
+const response = await fetch('${apiUrl}/api/queue/verify', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'x-public-key': '${event.publicKey}'
+  },
+  body: JSON.stringify({ token: tokenFromClient })
+});
+`;
+
+  res.status(200).json({
+    id:                         event.id,
+    name:                       event.name,
+    status:                     event.status,
+    stockCount:                 event.stockCount,
+    rateLimit:                  event.rateLimit,
+    oversubscriptionMultiplier: event.oversubscriptionMultiplier,
+    publicKey:                  event.publicKey,
+    rsaPublicKey:               event.rsaPublicKey,
+    signingSecret:              event.signingSecret,
+    createdAt:                  event.createdAt,
+    integrationSnippet,
+  });
+}
+
 // ── PUT /api/admin/events/:id/activate ───────────────────────────────────────
 //
 // TODO: Implement this endpoint to transition an event from PENDING → ACTIVE.
@@ -326,6 +438,87 @@ export async function activateEvent(req: Request<{ id: string }>, res: Response)
     message: 'Event is now ACTIVE. Queue is open.',
     id:      event.id,
     status:  'ACTIVE',
+  });
+}
+
+// ── GET /api/admin/events/:id/stats ──────────────────────────────────────────
+//
+// Live analytics dashboard for a single event. Runs Redis and Postgres queries
+// in parallel to minimise latency; Postgres aggregates may be slightly stale.
+
+export async function getEventStats(req: Request<{ id: string }>, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const event = await prisma.saleEvent.findUnique({ where: { id } });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  const eventKey = `flash:event:${event.publicKey}`;
+  const queueKey = `flash:queue:${event.publicKey}`;
+
+  const [
+    redisFields,
+    queueDepth,
+    attemptCounts,
+    releaseCounts,
+    usedJtiCount,
+  ] = await Promise.all([
+    redis.hmget(eventKey, 'stock', 'admitted', 'queueCap', 'status'),
+    redis.zcard(queueKey),
+    prisma.queueAttempt.groupBy({
+      by:    ['result'],
+      where: { saleEventId: id },
+      _count: { _all: true },
+    }),
+    prisma.ticketRelease.groupBy({
+      by:    ['reason'],
+      where: { saleEventId: id },
+      _count: { _all: true },
+    }),
+    prisma.usedJti.count({ where: { saleEventId: id } }),
+  ]);
+
+  const [stockStr, admittedStr, queueCapStr] = redisFields;
+
+  const attemptMap: Record<string, number> = {};
+  for (const row of attemptCounts) attemptMap[row.result] = row._count._all;
+
+  const releaseMap: Record<string, number> = {};
+  for (const row of releaseCounts) releaseMap[row.reason] = row._count._all;
+
+  const won         = attemptMap['WON']          ?? 0;
+  const queued      = attemptMap['QUEUED']        ?? 0;
+  const instantWins = attemptMap['INSTANT_WIN']   ?? 0;
+  const soldOut     = attemptMap['SOLD_OUT']       ?? 0;
+  const rateLimited = attemptMap['RATE_LIMITED']   ?? 0;
+  const totalRequests = Object.values(attemptMap).reduce((s, n) => s + n, 0);
+
+  const released = Object.values(releaseMap).reduce((s, n) => s + n, 0);
+  const verified = usedJtiCount;
+
+  res.status(200).json({
+    event: {
+      id:                         event.id,
+      name:                       event.name,
+      status:                     event.status,
+      stockCount:                 event.stockCount,
+      rateLimit:                  event.rateLimit,
+      oversubscriptionMultiplier: event.oversubscriptionMultiplier,
+      createdAt:                  event.createdAt,
+    },
+    live: {
+      stockRemaining: stockStr    !== null ? parseInt(stockStr,    10) : null,
+      queueDepth,
+      admitted:       admittedStr !== null ? parseInt(admittedStr, 10) : null,
+      queueCap:       queueCapStr !== null ? parseInt(queueCapStr, 10) : null,
+    },
+    funnel: { totalRequests, queued, instantWins, soldOut, rateLimited, won, released, verified },
+    rates: {
+      conversionRate: won > 0 ? verified / won : 0,
+      releaseRate:    won > 0 ? released / won : 0,
+    },
   });
 }
 
