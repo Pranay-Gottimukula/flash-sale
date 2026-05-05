@@ -9,6 +9,7 @@ import prisma                        from './lib/prisma';
 import redis, { connectRedis }       from './services/redis.service';
 import queueRoutes                   from './routes/queue.routes';
 import adminRoutes                   from './routes/admin.routes';
+import superadminRoutes              from './routes/superadmin.routes';
 import authRoutes                    from './routes/auth.routes';
 import healthRouter                  from './routes/health.routes';
 import jwksRouter                    from './routes/jwks.routes';
@@ -26,6 +27,7 @@ app.use('/health',          healthRouter);
 app.use('/api/auth',        authRoutes);
 app.use('/api/queue',       queueRoutes);
 app.use('/api/admin',       adminRoutes);
+app.use('/api/superadmin',  superadminRoutes);
 app.use('/api/.well-known/jwks', jwksRouter);
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -120,7 +122,7 @@ async function bootstrap(): Promise<void> {
 
     console.log(`\n[server] ${signal} received — starting graceful shutdown`);
 
-    for (const pk of getActiveDrains()) {
+    for (const pk of getActiveDrains().events) {
       stopDrain(pk);
     }
 
