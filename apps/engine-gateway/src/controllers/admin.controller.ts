@@ -75,17 +75,34 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
   //   }
   //   const { name, stockCount, rateLimit } = parsed.data;
 
-  const { clientId, name, stockCount, rateLimit = 50, oversubscriptionMultiplier = 1.5 } = req.body as {
-    clientId?:                   string;
+  const {
+    name,
+    stockCount,
+    rateLimit = 50,
+    oversubscriptionMultiplier = 1.5,
+    webhookUrl,
+    clientId: bodyClientId,
+  } = req.body as {
     name?:                       string;
     stockCount?:                 number;
     rateLimit?:                  number;
     oversubscriptionMultiplier?: number;
+    webhookUrl?:                 string;
+    clientId?:                   string;
   };
 
+  // JWT path: identity comes from the verified token.
+  // x-admin-secret path: clientId must be supplied in the body.
+  const authClient = res.locals.client;
+  const clientId   = authClient?.id ?? bodyClientId;
 
-  if (!clientId || !name || !stockCount) {
-    res.status(400).json({ error: '`clientId`, `name` and `stockCount` are required' });
+  if (!clientId) {
+    res.status(400).json({ error: '`clientId` is required when authenticating with the admin secret' });
+    return;
+  }
+
+  if (!name || !stockCount) {
+    res.status(400).json({ error: '`name` and `stockCount` are required' });
     return;
   }
 
@@ -107,14 +124,13 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
 
   const queueCap = Math.ceil(stockCount * oversubscriptionMultiplier);
 
-  const client = await prisma.client.findUnique({
-    where:  { id: clientId },
-    select: { id: true },
-  });
-
-  if (!client) {
-    res.status(404).json({ error: 'Client not found' });
-    return;
+  // JWT middleware already confirmed the client exists. Only verify for the secret path.
+  if (!authClient) {
+    const target = await prisma.client.findUnique({ where: { id: clientId }, select: { id: true } });
+    if (!target) {
+      res.status(404).json({ error: 'Client not found' });
+      return;
+    }
   }
 
  // ── Step 3: Generate keys ───────────────────────────────────────────────────
@@ -169,6 +185,7 @@ export async function createEvent(req: Request, res: Response): Promise<void> {
           rsaPrivateKey,
           rsaPublicKey,
           signingSecret,
+          webhookUrl:    webhookUrl ?? null,
         },
       });
 
@@ -272,7 +289,12 @@ async function seedRedis(params: {
 // Redis; all others use the Postgres stockCount.
 
 export async function listEvents(req: Request, res: Response): Promise<void> {
+  const authClient   = res.locals.client;
+  const isSuperAdmin = !authClient || authClient.role === 'SUPER_ADMIN';
+  const ownerFilter  = isSuperAdmin ? {} : { clientId: authClient!.id };
+
   const events = await prisma.saleEvent.findMany({
+    where:   ownerFilter,
     orderBy: { createdAt: 'desc' },
     select: {
       id:                         true,
@@ -284,6 +306,7 @@ export async function listEvents(req: Request, res: Response): Promise<void> {
       publicKey:                  true,
       rsaPublicKey:               true,
       createdAt:                  true,
+      client: { select: { email: true } },
       _count: { select: { attempts: true, releases: true, usedJtis: true } },
     },
   });
@@ -315,6 +338,7 @@ export async function listEvents(req: Request, res: Response): Promise<void> {
       rsaPublicKey:               e.rsaPublicKey,
       createdAt:                  e.createdAt,
       _count:                     e._count,
+      ...(isSuperAdmin ? { clientEmail: e.client.email } : {}),
     }))
   );
 }
@@ -332,11 +356,18 @@ export async function getEvent(req: Request<{ id: string }>, res: Response): Pro
     select: {
       id: true, name: true, status: true, stockCount: true, rateLimit: true,
       oversubscriptionMultiplier: true, publicKey: true, rsaPublicKey: true,
-      signingSecret: true, createdAt: true,
+      signingSecret: true, webhookUrl: true, endedAt: true, createdAt: true,
+      clientId: true,
     },
   });
   if (!event) {
     res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  const authClient = res.locals.client;
+  if (authClient && authClient.role !== 'SUPER_ADMIN' && event.clientId !== authClient.id) {
+    res.status(403).json({ error: 'Not your event' });
     return;
   }
 
@@ -378,7 +409,9 @@ const response = await fetch('${API_URL}/api/queue/verify', {
     publicKey:                  event.publicKey,
     rsaPublicKey:               event.rsaPublicKey,
     signingSecret:              event.signingSecret,
+    webhookUrl:                 event.webhookUrl,
     createdAt:                  event.createdAt,
+    endedAt:                    event.endedAt,
     integrationSnippet,
   });
 }
@@ -403,12 +436,18 @@ export async function activateEvent(req: Request<{ id: string }>, res: Response)
 
   const event = await prisma.saleEvent.findUnique({ where: { id } });
 
-  if(!event){
-    res.status(400).json({ error: 'Event not found' });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
     return;
   }
 
-  if(event.status !== 'PENDING'){
+  const activateAuth = res.locals.client;
+  if (activateAuth && activateAuth.role !== 'SUPER_ADMIN' && event.clientId !== activateAuth.id) {
+    res.status(403).json({ error: 'Not your event' });
+    return;
+  }
+
+  if (event.status !== 'PENDING') {
     res.status(409).json({ error: `Cannot activate — current status: ${event.status}` });
     return;
   }
@@ -472,6 +511,12 @@ export async function getEventStats(req: Request<{ id: string }>, res: Response)
   const event = await prisma.saleEvent.findUnique({ where: { id } });
   if (!event) {
     res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  const authClient = res.locals.client;
+  if (authClient && authClient.role !== 'SUPER_ADMIN' && event.clientId !== authClient.id) {
+    res.status(403).json({ error: 'Not your event' });
     return;
   }
 
@@ -543,8 +588,14 @@ export async function endEvent(req: Request<{ id: string }>, res: Response): Pro
 
   const event = await prisma.saleEvent.findUnique({ where: { id } });
 
-  if(!event){
-    res.status(400).json({ error: 'Event Not Found' });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  const endAuth = res.locals.client;
+  if (endAuth && endAuth.role !== 'SUPER_ADMIN' && event.clientId !== endAuth.id) {
+    res.status(403).json({ error: 'Not your event' });
     return;
   }
 
@@ -555,7 +606,7 @@ export async function endEvent(req: Request<{ id: string }>, res: Response): Pro
 
   await prisma.saleEvent.update({
     where: { id },
-    data:  { status: 'ENDED' },
+    data:  { status: 'ENDED', endedAt: new Date() },
   });
 
   // ── 2. Redis — mark ENDED + set TTL ──────────────────────────────────────

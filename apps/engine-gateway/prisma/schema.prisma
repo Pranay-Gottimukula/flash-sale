@@ -18,6 +18,9 @@ model Client {
   email        String      @unique
   passwordHash String
   publicKey    String      @unique
+  role         String      @default("CLIENT")
+  suspended    Boolean     @default(false)
+  name         String?
   createdAt    DateTime    @default(now())
   events       SaleEvent[]
 }
@@ -40,6 +43,8 @@ model SaleEvent {
   // Kept as random bytes — no reason to use RSA for request authentication
   signingSecret  String
   
+  webhookUrl   String?
+  endedAt      DateTime?
   createdAt    DateTime @default(now())
 
   client    Client          @relation(fields: [clientId], references: [id])

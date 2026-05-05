@@ -1,40 +1,35 @@
-// apps/engine-gateway/src/controllers/auth.controller.ts
-//
-// Simple email + password auth for the SaaS dashboard.
-// Passwords are hashed with bcryptjs (cost 12).
-// Sessions are stateless JWTs signed with JWT_SECRET.
-
 import { Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
-import prisma from '../lib/prisma';
+import bcrypt                from 'bcryptjs';
+import crypto                from 'crypto';
+import prisma                from '../lib/prisma';
+import { signAuthToken, verifyAuthToken } from '../lib/auth';
 
-const JWT_SECRET  = process.env.JWT_SECRET ?? 'change-me-in-production';
-const JWT_EXPIRES = '7d';
-
-interface JwtPayload {
-  sub:   string; // client id
-  email: string;
-}
-
-function signToken(clientId: string, email: string): string {
-  return jwt.sign({ sub: clientId, email } satisfies JwtPayload, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES,
-  });
+function clientView(client: {
+  id: string; email: string; name: string | null;
+  role: string; publicKey: string; createdAt: Date;
+}) {
+  return {
+    id:        client.id,
+    email:     client.email,
+    name:      client.name,
+    role:      client.role,
+    publicKey: client.publicKey,
+    createdAt: client.createdAt,
+  };
 }
 
 // ── POST /api/auth/signup ─────────────────────────────────────────────────────
 
 export async function signup(req: Request, res: Response): Promise<void> {
-  const { email, password } = req.body as { email?: string; password?: string };
+  const { email, password, name } = req.body as {
+    email?: string; password?: string; name?: string;
+  };
 
   if (!email || !password) {
     res.status(400).json({ error: 'email and password are required' });
     return;
   }
 
-  // Basic email format check
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     res.status(400).json({ error: 'Invalid email address' });
     return;
@@ -47,23 +42,21 @@ export async function signup(req: Request, res: Response): Promise<void> {
 
   const existing = await prisma.client.findUnique({ where: { email } });
   if (existing) {
-    res.status(409).json({ error: 'An account with this email already exists' });
+    res.status(409).json({ error: 'Email already registered' });
     return;
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-  const publicKey    = `pk_client_${crypto.randomBytes(20).toString('hex')}`;
+  const publicKey    = crypto.randomUUID();
 
   const client = await prisma.client.create({
-    data: { email, passwordHash, publicKey },
+    data: { email, passwordHash, publicKey, role: 'CLIENT', name: name ?? null },
+    select: { id: true, email: true, name: true, role: true, publicKey: true, createdAt: true },
   });
 
-  const token = signToken(client.id, client.email);
+  const token = signAuthToken({ sub: client.id, email: client.email, role: client.role });
 
-  res.status(201).json({
-    token,
-    client: { id: client.id, email: client.email },
-  });
+  res.status(201).json({ token, client: clientView(client) });
 }
 
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
@@ -76,41 +69,46 @@ export async function login(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const client = await prisma.client.findUnique({ where: { email } });
+  const client = await prisma.client.findUnique({
+    where:  { email },
+    select: { id: true, email: true, name: true, role: true, publicKey: true,
+              createdAt: true, passwordHash: true, suspended: true },
+  });
 
-  // Use a constant-time compare even for the "not found" path to prevent
-  // timing-based email enumeration.
+  // Constant-time dummy compare prevents timing-based email enumeration.
   const dummyHash    = '$2a$12$invalidhashfortimingnormalization000000000000000000000000';
   const hashToVerify = client?.passwordHash ?? dummyHash;
   const valid        = await bcrypt.compare(password, hashToVerify);
 
   if (!client || !valid) {
-    res.status(401).json({ error: 'Invalid email or password' });
+    res.status(401).json({ error: 'Invalid credentials' });
     return;
   }
 
-  const token = signToken(client.id, client.email);
+  if (client.suspended) {
+    res.status(403).json({ error: 'Account suspended' });
+    return;
+  }
 
-  res.status(200).json({
-    token,
-    client: { id: client.id, email: client.email },
-  });
+  const token = signAuthToken({ sub: client.id, email: client.email, role: client.role });
+
+  res.status(200).json({ token, client: clientView(client) });
 }
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────
 
-export async function me(req: Request, res: Response): Promise<void> {
+export async function getMe(req: Request, res: Response): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Missing token' });
+    res.status(401).json({ error: 'Missing or invalid Authorization header' });
     return;
   }
 
   const token = authHeader.slice(7);
 
-  let payload: JwtPayload;
+  let payload: { sub: string };
   try {
-    payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    payload = verifyAuthToken(token);
   } catch {
     res.status(401).json({ error: 'Token invalid or expired' });
     return;
@@ -118,13 +116,14 @@ export async function me(req: Request, res: Response): Promise<void> {
 
   const client = await prisma.client.findUnique({
     where:  { id: payload.sub },
-    select: { id: true, email: true },
+    select: { id: true, email: true, name: true, role: true,
+              publicKey: true, createdAt: true, suspended: true },
   });
 
-  if (!client) {
-    res.status(401).json({ error: 'Account not found' });
+  if (!client || client.suspended) {
+    res.status(401).json({ error: 'Account not found or suspended' });
     return;
   }
 
-  res.status(200).json({ id: client.id, email: client.email });
+  res.status(200).json({ client: clientView(client) });
 }
