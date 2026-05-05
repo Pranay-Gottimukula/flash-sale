@@ -50,6 +50,8 @@ export function getActiveDrains(): string[] {
 //   await initDrains();
 
 export async function initDrains(): Promise<void> {
+  // PAUSED events are excluded by the status filter — their queues are
+  // preserved in Redis but not processed until resumeEvent() calls startDrain().
   const activeEvents = await prisma.saleEvent.findMany({
     where:  { status: 'ACTIVE' },
     select: { publicKey: true, rateLimit: true },

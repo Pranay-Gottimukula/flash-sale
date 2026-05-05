@@ -21,6 +21,12 @@ if status == nil or status == false then
     return {-4, 'EVENT_NOT_FOUND'}
 end
 
+-- Step 2b: distinguish PAUSED from other non-active states so the controller
+-- can return a friendlier message instead of the generic EVENT_NOT_ACTIVE error.
+if status == 'PAUSED' then
+    return {-6, 'EVENT_PAUSED'}
+end
+
 -- Step 3
 if status ~= 'ACTIVE' then
     return {-3, 'EVENT_NOT_ACTIVE'}

@@ -92,6 +92,15 @@ export async function joinQueue(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  if (code === -6) {
+    res.status(503).json({
+      status:     'PAUSED',
+      message:    'This sale is temporarily paused. Please try again shortly.',
+      retryAfter: 30,
+    });
+    return;
+  }
+
   if (code === -3) {
     res.status(400).json({ error: 'EVENT_NOT_ACTIVE' });
     return;
