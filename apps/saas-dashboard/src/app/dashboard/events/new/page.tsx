@@ -19,7 +19,7 @@ interface CreateEventResponse {
 export default function CreateEventPage() {
   const router   = useRouter();
   const { user } = useAuth();
-  const { toast } = useToast();
+  const toast = useToast();
 
   const [name,       setName]       = useState('');
   const [stockCount, setStockCount] = useState('');
@@ -43,7 +43,7 @@ export default function CreateEventPage() {
         rateLimit:                  Number(rateLimit),
         oversubscriptionMultiplier: Number(multiplier),
       });
-      toast('Event created successfully');
+      toast.success('Event created successfully');
       router.push(`/dashboard/events/${event.id}`);
     } catch (err) {
       setError(toErrorMessage(err));

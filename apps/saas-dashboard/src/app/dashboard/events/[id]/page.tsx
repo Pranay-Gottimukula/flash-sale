@@ -133,7 +133,7 @@ function FunnelBar({
 
 export default function EventDetailPage() {
   const { id }    = useParams<{ id: string }>();
-  const { toast } = useToast();
+  const toast = useToast();
 
   const [event,         setEvent]         = useState<EventDetail | null>(null);
   const [stats,         setStats]         = useState<StatsResponse | null>(null);
@@ -180,7 +180,7 @@ export default function EventDetailPage() {
       const [ev, st] = await Promise.all([fetchEvent(), fetchStats()]);
       setEvent(ev);
       setStats(st);
-      toast('Event activated — queue is now open');
+      toast.success('Event activated — queue is now open');
     } catch (err) {
       setActionError(toErrorMessage(err));
     } finally {
@@ -197,7 +197,7 @@ export default function EventDetailPage() {
       const [ev, st] = await Promise.all([fetchEvent(), fetchStats()]);
       setEvent(ev);
       setStats(st);
-      toast('Event ended — queue is closed');
+      toast.success('Event ended — queue is closed');
     } catch (err) {
       setActionError(toErrorMessage(err));
     } finally {

@@ -10,6 +10,7 @@ interface CopyableFieldProps {
   multiline?:       boolean;
   defaultExpanded?: boolean;
   masked?:          boolean;
+  mono?:            boolean;
   warning?:         string;
   className?:       string;
 }
@@ -20,6 +21,7 @@ export function CopyableField({
   multiline,
   defaultExpanded = false,
   masked,
+  mono = true,
   warning,
   className,
 }: CopyableFieldProps) {
@@ -80,7 +82,8 @@ export function CopyableField({
           multiline && !expanded && 'max-h-[5rem]',
         )}>
           <pre className={cn(
-            'font-mono text-xs leading-relaxed break-all whitespace-pre-wrap text-text-primary',
+            'text-xs leading-relaxed break-all whitespace-pre-wrap text-text-primary',
+            mono && 'font-mono',
             masked && !revealed && 'tracking-[0.2em] text-text-tertiary',
           )}>
             {display}
