@@ -6,6 +6,8 @@ import {
   listEvents,
   getEvent,
   activateEvent,
+  pauseEvent,
+  resumeEvent,
   endEvent,
   getEventStats,
 } from '../controllers/admin.controller';
@@ -18,6 +20,8 @@ router.use(requireAdminAuth);
 router.get   ('/events',              listEvents);
 router.post  ('/events',              createEvent);
 router.put   ('/events/:id/activate', activateEvent);
+router.put   ('/events/:id/pause',    pauseEvent);
+router.put   ('/events/:id/resume',   resumeEvent);
 router.put   ('/events/:id/end',      endEvent);
 router.get   ('/events/:id',           getEvent);
 router.get   ('/events/:id/stats',    getEventStats);

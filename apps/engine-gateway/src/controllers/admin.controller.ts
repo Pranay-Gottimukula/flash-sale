@@ -583,6 +583,144 @@ export async function getEventStats(req: Request<{ id: string }>, res: Response)
   });
 }
 
+// ── PUT /api/admin/events/:id/pause ──────────────────────────────────────────
+//
+// Pauses an ACTIVE event: stops the drain loop and marks status PAUSED in
+// both Postgres and Redis.  Queue positions are preserved — users keep their
+// place.  Only SUPER_ADMIN (or x-admin-secret) may call this.
+
+export async function pauseEvent(req: Request<{ id: string }>, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const authClient = res.locals.client;
+  if (authClient && authClient.role !== 'SUPER_ADMIN') {
+    res.status(403).json({ error: 'Only SUPER_ADMIN can pause events' });
+    return;
+  }
+
+  const event = await prisma.saleEvent.findUnique({ where: { id } });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  if (event.status !== 'ACTIVE') {
+    res.status(409).json({ error: `Cannot pause — current status: ${event.status}` });
+    return;
+  }
+
+  let updatedEvent: Awaited<ReturnType<typeof prisma.saleEvent.update>>;
+  try {
+    updatedEvent = await prisma.saleEvent.update({
+      where: { id },
+      data:  { status: 'PAUSED' },
+    });
+  } catch (err) {
+    console.error('[pauseEvent] Postgres update failed:', err);
+    res.status(500).json({ error: 'Failed to pause event' });
+    return;
+  }
+
+  const { eventKey } = getRedisKeys(event.publicKey);
+  try {
+    await redis.hset(eventKey, 'status', 'PAUSED');
+  } catch (err) {
+    console.error(
+      `[pauseEvent] CRITICAL: Postgres updated but Redis failed for ${id}. ` +
+      `Manual fix: redis-cli HSET ${eventKey} status PAUSED`,
+      err,
+    );
+    res.status(500).json({ error: 'Paused in DB but Redis sync failed. Contact support.' });
+    return;
+  }
+
+  stopDrain(event.publicKey);
+
+  if (event.webhookUrl) {
+    fetch(event.webhookUrl, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ event: 'paused', eventId: event.id, timestamp: new Date().toISOString() }),
+    }).catch(err => console.error('[pauseEvent] Webhook delivery failed:', err));
+  }
+
+  res.status(200).json({ message: 'Event paused', event: updatedEvent });
+}
+
+// ── PUT /api/admin/events/:id/resume ─────────────────────────────────────────
+//
+// Resumes a PAUSED event: warms the Node cache (in case of server restart),
+// updates status to ACTIVE, and restarts the drain loop.
+// Only SUPER_ADMIN (or x-admin-secret) may call this.
+
+export async function resumeEvent(req: Request<{ id: string }>, res: Response): Promise<void> {
+  const { id } = req.params;
+
+  const authClient = res.locals.client;
+  if (authClient && authClient.role !== 'SUPER_ADMIN') {
+    res.status(403).json({ error: 'Only SUPER_ADMIN can resume events' });
+    return;
+  }
+
+  const event = await prisma.saleEvent.findUnique({ where: { id } });
+  if (!event) {
+    res.status(404).json({ error: 'Event not found' });
+    return;
+  }
+
+  if (event.status !== 'PAUSED') {
+    res.status(409).json({ error: `Cannot resume — current status: ${event.status}` });
+    return;
+  }
+
+  let updatedEvent: Awaited<ReturnType<typeof prisma.saleEvent.update>>;
+  try {
+    updatedEvent = await prisma.saleEvent.update({
+      where: { id },
+      data:  { status: 'ACTIVE' },
+    });
+  } catch (err) {
+    console.error('[resumeEvent] Postgres update failed:', err);
+    res.status(500).json({ error: 'Failed to resume event' });
+    return;
+  }
+
+  const { eventKey } = getRedisKeys(event.publicKey);
+  try {
+    await redis.hset(eventKey, 'status', 'ACTIVE');
+  } catch (err) {
+    console.error(
+      `[resumeEvent] CRITICAL: Postgres updated but Redis failed for ${id}. ` +
+      `Manual fix: redis-cli HSET ${eventKey} status ACTIVE`,
+      err,
+    );
+    res.status(500).json({ error: 'Resumed in DB but Redis sync failed. Contact support.' });
+    return;
+  }
+
+  // Warm the cache unconditionally — it may have been evicted if the server
+  // restarted while the event was paused.
+  warmEventCache(event.publicKey, {
+    rsaPrivateKey: event.rsaPrivateKey,
+    rsaPublicKey:  event.rsaPublicKey,
+    signingSecret: event.signingSecret,
+    eventId:       event.id,
+    name:          event.name,
+  });
+
+  startDrain(event.publicKey, event.rateLimit);
+
+  if (event.webhookUrl) {
+    fetch(event.webhookUrl, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ event: 'resumed', eventId: event.id, timestamp: new Date().toISOString() }),
+    }).catch(err => console.error('[resumeEvent] Webhook delivery failed:', err));
+  }
+
+  res.status(200).json({ message: 'Event resumed', event: updatedEvent });
+}
+
 export async function endEvent(req: Request<{ id: string }>, res: Response): Promise<void> {
   const { id } = req.params;
 
