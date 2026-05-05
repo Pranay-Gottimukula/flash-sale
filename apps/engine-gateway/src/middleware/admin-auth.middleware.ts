@@ -160,3 +160,20 @@ export async function requireAdminAuth(
 
   next();
 }
+
+// ── requireRole ───────────────────────────────────────────────────────────────
+//
+// Must run after requireAdminAuth. Checks res.locals.client.role.
+// The x-admin-secret path leaves no client attached — treat as SUPER_ADMIN.
+
+export function requireRole(role: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const client = res.locals.client;
+    if (!client) { next(); return; }
+    if (client.role !== role) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+    next();
+  };
+}

@@ -27,8 +27,9 @@ import { promisify }          from 'util';
 import crypto                 from 'crypto';
 import prisma from '../lib/prisma';
 import redis, { getRedisKeys } from '../services/redis.service';
-import { warmEventCache, evictEventCache } from '../services/event-cache.service';
+import { warmEventCache } from '../services/event-cache.service';
 import { startDrain, stopDrain }           from '../services/drain.service';
+import { endEventCore } from '../services/event-lifecycle.service';
 
 const generateKeyPairAsync = promisify(generateKeyPair);
 
@@ -742,34 +743,7 @@ export async function endEvent(req: Request<{ id: string }>, res: Response): Pro
     return;
   }
 
-  await prisma.saleEvent.update({
-    where: { id },
-    data:  { status: 'ENDED', endedAt: new Date() },
-  });
-
-  // ── 2. Redis — mark ENDED + set TTL ──────────────────────────────────────
-  //
-  // Setting status to ENDED means the Lua script immediately starts
-  // returning EVENT_NOT_ACTIVE for any in-flight requests.
-  // TTL cleans up the hash from Redis memory after 48 hours.
-
-  const { eventKey: endKey, queueKey: endQueueKey, resultKey: endResultKey } = getRedisKeys(event.publicKey);
-  const pipeline = redis.pipeline();
-  pipeline.hset(endKey, 'status', 'ENDED');
-  pipeline.expire(endKey, 48 * 60 * 60);
-  pipeline.del(endQueueKey);
-  pipeline.del(endResultKey);
-  await pipeline.exec();
-
-  stopDrain(event.publicKey);
-
-  // ── 3. Evict Node cache ───────────────────────────────────────────────────
-  //
-  // Remove secretKey from memory now that the event is over.
-  // Any requests that sneak through after this point get a cache miss,
-  // hit Postgres, find status=ENDED, and get null back → 404.
-
-  evictEventCache(event.publicKey);
+  await endEventCore(event);
 
   res.status(200).json({
     message: 'Event ended. Queue is closed.',

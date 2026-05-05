@@ -18,10 +18,12 @@ if (!connectionString) {
 // // 3. Initialize the Prisma adapter with the pool
 // const adapter = new PrismaPg(pool);
 
+let _pool: Pool | undefined;
+
 const prismaClientSingleton = () => {
-  const pool = new Pool({ connectionString });
-  const adapter = new PrismaPg(pool);
-  
+  _pool = new Pool({ connectionString });
+  const adapter = new PrismaPg(_pool);
+
   return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
@@ -38,6 +40,14 @@ export const prisma = globalForPrisma.prisma ?? prismaClientSingleton();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
+}
+
+export function getPoolStats() {
+  return {
+    total:   _pool?.totalCount   ?? 0,
+    idle:    _pool?.idleCount    ?? 0,
+    waiting: _pool?.waitingCount ?? 0,
+  };
 }
 
 export default prisma;

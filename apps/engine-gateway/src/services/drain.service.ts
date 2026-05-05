@@ -38,9 +38,8 @@ export function stopDrain(publicKey: string): void {
   console.log(`[drain] Stopped for ${publicKey}`);
 }
 
-// Returns publicKeys of events currently being drained — used by health endpoint.
-export function getActiveDrains(): string[] {
-  return [...activeDrains.keys()];
+export function getActiveDrains(): { count: number; events: string[] } {
+  return { count: activeDrains.size, events: [...activeDrains.keys()] };
 }
 
 // ── Server startup ────────────────────────────────────────────────────────────
