@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
-import { Zap } from 'lucide-react';
+import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { ArrowLeft, Copy, Zap } from 'lucide-react';
 import { api }           from '@/lib/api';
 import { relativeTime, toErrorMessage } from '@/lib/utils';
 import { useToast }      from '@/components/ui/toast';
@@ -16,7 +17,16 @@ import { CopyableField } from '@/components/ui/copyable-field';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type EventStatus = 'PENDING' | 'ACTIVE' | 'ENDED';
+type EventStatus = 'PENDING' | 'ACTIVE' | 'PAUSED' | 'ENDED';
+
+interface EventTimeline {
+  created:       string | null;
+  activated:     string | null;
+  firstWinner:   string | null;
+  stockDepleted: string | null;
+  lastRelease:   string | null;
+  ended:         string | null;
+}
 
 interface EventDetail {
   id:                         string;
@@ -30,6 +40,7 @@ interface EventDetail {
   signingSecret:              string;
   createdAt:                  string;
   integrationSnippet:         string;
+  timeline?:                  EventTimeline;
 }
 
 interface StatsResponse {
@@ -60,6 +71,7 @@ interface StatsResponse {
 const STATUS_VARIANT: Record<EventStatus, BadgeVariant> = {
   PENDING: 'neutral',
   ACTIVE:  'success',
+  PAUSED:  'warning',
   ENDED:   'error',
 };
 
@@ -129,10 +141,76 @@ function FunnelBar({
   );
 }
 
+// ── Timeline ──────────────────────────────────────────────────────────────────
+
+function TimelineSection({ timeline, status }: { timeline: EventTimeline; status: EventStatus }) {
+  const points: { label: string; ts: string | null }[] = [
+    { label: 'Created',        ts: timeline.created },
+    { label: 'Activated',      ts: timeline.activated },
+    { label: 'First Winner',   ts: timeline.firstWinner },
+    { label: 'Stock Depleted', ts: timeline.stockDepleted },
+    { label: 'Last Release',   ts: timeline.lastRelease },
+    { label: 'Ended',          ts: timeline.ended },
+  ];
+
+  const visible = points.filter(p => p.ts !== null);
+  if (visible.length === 0) return null;
+
+  const lastIdx = visible.length - 1;
+
+  function fmtTs(ts: string) {
+    return new Date(ts).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  const isCurrentStage = (label: string) => {
+    if (status === 'ACTIVE'  && label === 'Activated')      return true;
+    if (status === 'ENDED'   && label === 'Ended')          return true;
+    return false;
+  };
+
+  return (
+    <Card header={<p className="text-sm font-semibold text-text-primary">Event Timeline</p>}>
+      <div className="space-y-0">
+        {visible.map(({ label, ts }, i) => {
+          const active = isCurrentStage(label);
+          return (
+            <div key={label} className="flex gap-4">
+              {/* Dot + line column */}
+              <div className="flex flex-col items-center">
+                <div className={[
+                  'relative z-10 mt-0.5 flex h-3 w-3 shrink-0 items-center justify-center rounded-full',
+                  active ? 'bg-accent' : 'bg-surface-overlay border border-border',
+                ].join(' ')}>
+                  {active && (
+                    <span className="absolute inset-0 animate-ping rounded-full bg-accent opacity-50" />
+                  )}
+                </div>
+                {i < lastIdx && (
+                  <div className="mt-1 w-px flex-1 bg-border-subtle" style={{ minHeight: 24 }} />
+                )}
+              </div>
+              {/* Content */}
+              <div className={i < lastIdx ? 'pb-5' : ''}>
+                <p className={`text-sm font-medium ${active ? 'text-accent' : 'text-text-primary'}`}>
+                  {label}
+                </p>
+                <p className="text-xs text-text-tertiary">{fmtTs(ts!)}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function EventDetailPage() {
   const { id }    = useParams<{ id: string }>();
+  const router    = useRouter();
   const toast = useToast();
 
   const [event,         setEvent]         = useState<EventDetail | null>(null);
@@ -205,6 +283,19 @@ export default function EventDetailPage() {
     }
   }
 
+  async function handleDuplicate() {
+    setActionError('');
+    setActionLoading(true);
+    try {
+      const { id: newId } = await api.post<{ id: string }>(`/api/admin/events/${id}/duplicate`);
+      toast.success('Event duplicated');
+      router.push(`/dashboard/events/${newId}`);
+    } catch (err) {
+      setActionError(toErrorMessage(err));
+      setActionLoading(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -231,6 +322,7 @@ export default function EventDetailPage() {
 
   const { live, funnel } = stats ?? { live: null, funnel: null };
   const isActive         = event.status === 'ACTIVE';
+  const showTimeline     = (event.status === 'ACTIVE' || event.status === 'ENDED') && event.timeline;
 
   return (
     <div className="animate-page-in">
@@ -259,11 +351,24 @@ export default function EventDetailPage() {
               End Event
             </Button>
           )}
+          {event.status === 'PAUSED' && (
+            <span className="text-sm font-medium text-yellow-400">
+              Event paused by admin
+            </span>
+          )}
           {event.status === 'ENDED' && (
             <span className="text-sm text-text-tertiary">
               Ended {relativeTime(event.createdAt)}
             </span>
           )}
+          <Button
+            variant="secondary"
+            loading={actionLoading}
+            onClick={handleDuplicate}
+          >
+            <Copy size={14} />
+            Duplicate
+          </Button>
         </div>
       </div>
 
@@ -279,12 +384,17 @@ export default function EventDetailPage() {
           total={event.stockCount}
           isLive={isActive}
         />
-        <StatCard label="Queue Depth"   value={live?.queueDepth  ?? null} isLive={isActive} />
-        <StatCard label="Total Winners" value={funnel?.won        ?? null} isLive={isActive} />
-        <StatCard label="Verified"      value={funnel?.verified  ?? null} isLive={isActive} />
+        <StatCard label="Queue Depth" value={live?.queueDepth  ?? null} isLive={isActive} />
+        <StatCard label="Winners"     value={funnel?.won        ?? null} isLive={isActive} />
+        <StatCard label="Verified"    value={funnel?.verified  ?? null} isLive={isActive} />
       </div>
 
       <div className="space-y-5">
+        {/* ── Timeline ────────────────────────────────────────────────────── */}
+        {showTimeline && (
+          <TimelineSection timeline={event.timeline!} status={event.status} />
+        )}
+
         {/* ── Integration Keys ────────────────────────────────────────────── */}
         <Card header={<p className="text-sm font-semibold text-text-primary">Integration Keys</p>}>
           <div className="space-y-5">
@@ -294,7 +404,7 @@ export default function EventDetailPage() {
               label="Signing Secret"
               value={event.signingSecret}
               masked
-              warning="This secret is shown once. Store it securely."
+              warning="Store this securely. Used for release route HMAC."
             />
             <CopyableField
               label="Integration Snippet"
@@ -353,6 +463,17 @@ export default function EventDetailPage() {
             </div>
           </Card>
         )}
+      </div>
+
+      {/* ── Back link ───────────────────────────────────────────────────────── */}
+      <div className="mt-8">
+        <Link
+          href="/dashboard"
+          className="inline-flex items-center gap-1.5 text-sm text-text-tertiary transition-colors hover:text-text-secondary"
+        >
+          <ArrowLeft size={14} />
+          Back to events
+        </Link>
       </div>
 
       {/* ── End Event modal ─────────────────────────────────────────────────── */}
